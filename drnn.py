@@ -1,5 +1,5 @@
 # drnn implementation using pytorch
-# from https://github.com/zalandoresearch/pytorch-dilated-rnn/blob/master/drnn.py
+# from https://github.com/zalandoresearch/pytorch-dilated-rnn/blob/master/drnn.py and modified as needed
 
 import torch
 import torch.nn as nn
@@ -9,14 +9,17 @@ use_cuda = torch.cuda.is_available()
 
 class DRNN(nn.Module):
 
-    def __init__(self, n_input, n_hidden, n_layers, dropout=0, cell_type='GRU', batch_first=True):
+    def __init__(self, n_input, hidden_sizes, dropout=0, cell_type='GRU', bidirectional=True, batch_first=True):
         super(DRNN, self).__init__()
 
+        self.n_layers = len(hidden_sizes)
+
         #self.dilations = [2 ** i for i in range(n_layers)]
-        # dilation schedule = 1,4,16 for 3 layers (cf article)
-        self.dilations = [4**i for i in range(n_layers)]
+        # dilation schedule = 1, 4, 16 for 3 layers (cf article)
+        self.dilations = [4**i for i in range(self.n_layers)]
 
         self.cell_type = cell_type
+        self.bidirectional = bidirectional
         self.batch_first = batch_first
 
         layers = []
@@ -29,12 +32,12 @@ class DRNN(nn.Module):
         else:
             raise NotImplementedError
 
-        for i in range(n_layers):
-            if i == 0:  
-                c = cell(n_input, n_hidden, dropout=dropout)
-            else:
-                c = cell(n_hidden, n_hidden, dropout=dropout)
-            layers.append(c)
+        # Iterate through the provided hidden sizes to build the stack
+        current_input_dim = n_input
+        for h_size in hidden_sizes:
+            layers.append(cell(current_input_dim, h_size, dropout=dropout, bidirectional=self.bidirectional))
+            # The output dimension of this layer is the input for the next
+            current_input_dim = h_size * (2 if self.bidirectional else 1)
         self.cells = nn.Sequential(*layers)
 
     def forward(self, inputs, hidden=None):
@@ -51,7 +54,7 @@ class DRNN(nn.Module):
 
         if self.batch_first:
             inputs = inputs.transpose(0, 1)
-        return inputs, outputs
+        return inputs, outputs # return last layer outputs and all layers outputs
 
     def drnn_layer(self, cell, inputs, rate, hidden=None):
         n_steps = len(inputs)
@@ -74,11 +77,17 @@ class DRNN(nn.Module):
 
     def _apply_cell(self, dilated_inputs, cell, batch_size, rate, hidden_size, hidden=None):
         if hidden is None:
+            # CRITICAL FIX: Handle bidirectional initialization
+            num_directions = 2 if self.bidirectional else 1
+            
             if self.cell_type == 'LSTM':
                 c, m = self.init_hidden(batch_size * rate, hidden_size)
-                hidden = (c.unsqueeze(0), m.unsqueeze(0))
+                # Repeat for directions: (1, B, H) -> (num_directions, B, H)
+                hidden = (c.unsqueeze(0).repeat(num_directions, 1, 1), 
+                          m.unsqueeze(0).repeat(num_directions, 1, 1))
             else:
-                hidden = self.init_hidden(batch_size * rate, hidden_size).unsqueeze(0)
+                # Repeat for directions: (1, B, H) -> (num_directions, B, H)
+                hidden = self.init_hidden(batch_size * rate, hidden_size).unsqueeze(0).repeat(num_directions, 1, 1)
 
         dilated_outputs, hidden = cell(dilated_inputs, hidden)
 

@@ -3,9 +3,12 @@
 import torch
 import torch.optim as optim
 import numpy as np
-from sklearn.metrics import adjusted_rand_score
+from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score, rand_score
+
+from collections import defaultdict
 
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 
 from ucr_loader import load_plane_dataset, IndexedDataset, DataLoader #TimeSeriesDataset
 from dtcr_model import DTCR   # Your DTCR implementation
@@ -25,6 +28,78 @@ def cluster_accuracy(assign, labels):
     cm = confusion_matrix(labels, assign)
     r, c = linear_sum_assignment(cm.max() - cm)
     return cm[r, c].sum() / len(assign)
+
+
+def plot_history(history):
+    # On crée une figure plus haute pour accomoder les 4 subplots verticaux
+    fig = plt.figure(figsize=(18, 12))
+    
+    # Grille de 4 lignes x 3 colonnes
+    # La colonne 0 servira aux 4 losses séparées
+    # Les colonnes 1 et 2 serviront aux plots Log et Métriques (qui prendront toute la hauteur)
+    gs = fig.add_gridspec(4, 3)
+
+    # --- COLONNE 1 : Les 4 Losses séparées (Linéaire) ---
+    
+    # 1. Total Loss
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.plot(history['loss'], label='Total Loss', color='black')
+    ax1.set_title('Total Loss')
+    ax1.grid(True, alpha=0.3)
+    # On retire les labels x pour les graphes du haut pour ne pas surcharger
+    ax1.set_xticklabels([]) 
+
+    # 2. Reconstruction
+    ax2 = fig.add_subplot(gs[1, 0])
+    ax2.plot(history['recon'], label='Reconstruction', color='blue')
+    ax2.set_title('Reconstruction Loss')
+    ax2.grid(True, alpha=0.3)
+    ax2.set_xticklabels([])
+
+    # 3. Classification
+    ax3 = fig.add_subplot(gs[2, 0])
+    ax3.plot(history['classif'], label='Classification', color='green')
+    ax3.set_title('Classification Loss')
+    ax3.grid(True, alpha=0.3)
+    ax3.set_xticklabels([])
+
+    # 4. K-Means
+    ax4 = fig.add_subplot(gs[3, 0])
+    ax4.plot(history['kmeans'], label='K-Means', color='red')
+    ax4.set_title('K-Means Loss')
+    ax4.grid(True, alpha=0.3)
+    ax4.set_xlabel('Epoch') # Seulement sur le dernier
+    
+    # --- COLONNE 2 : Toutes les losses en Log Scale (Prend toute la hauteur) ---
+    ax_log = fig.add_subplot(gs[:, 1]) # ":" signifie "toutes les lignes"
+    ax_log.plot(history['loss'], label='Total', alpha=0.8)
+    ax_log.plot(history['recon'], label='Reconstruction', alpha=0.8)
+    ax_log.plot(history['classif'], label='Classification', alpha=0.8)
+    ax_log.plot(history['kmeans'], label='K-Means', alpha=0.8)
+    ax_log.set_title('All Losses (Log Scale)')
+    ax_log.set_xlabel('Epoch')
+    ax_log.set_ylabel('Loss (log)')
+    ax_log.set_yscale('log')
+    ax_log.grid(True, alpha=0.3, which='both')
+    ax_log.legend()
+
+    # --- COLONNE 3 : Métriques de Clustering (Prend toute la hauteur) ---
+    ax_metrics = fig.add_subplot(gs[:, 2])
+    
+    ax_metrics.plot(history['acc'], label='ACC', alpha=0.8)
+    ax_metrics.plot(history['ari'], label='ARI', alpha=0.8)
+    ax_metrics.plot(history['nmi'], label='NMI', alpha=0.8)
+    ax_metrics.plot( history['ri'], label='RI', alpha=0.8)
+    
+    ax_metrics.set_title('Clustering Metrics')
+    ax_metrics.set_xlabel('Epoch')
+    ax_metrics.set_ylabel('Score')
+    ax_metrics.set_ylim(0, 1.05) # Fixe l'échelle entre 0 et 1
+    ax_metrics.grid(True, alpha=0.3)
+    ax_metrics.legend()
+
+    plt.tight_layout()
+    plt.show()
 
 
 def initialize_cluster_centers(model, loader):
@@ -103,27 +178,27 @@ def train_dtcr():
     model = DTCR(
         input_size=seq_dim, # seq_len
         num_steps=seq_len,
-        embedding_size=16,
         cell_type="GRU", # (cf article)
-        drnn_layers=3, # (cf article)                  
         drnn_hidden_sizes=[100, 50, 50], # [100, 50, 50] or [50, 30, 30] (cf article)
-        lamb=0.01, # in [1, 1e-1, 1e-2, 1e-3] (cf article)
+        lamb=1e-3, # in [1, 1e-1, 1e-2, 1e-3] (cf article)
         class_num=7,     # Plane dataset = 7 classes
     ).to(DEVICE)
 
-    optimizer = optim.Adam(model.parameters(), lr=5e-3) # lr=1e-3 (cf article)
+    optimizer = optim.Adam(model.parameters(), lr=1e-2) # lr=5e-3 (cf article)
     # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.1, patience=10) # (not in the article)
 
     # # ---- KMeans initialization ----
     # print("Initializing cluster centers...")
     # initialize_cluster_centers(model, train_loader)
 
-    list_loss = []
-    list_recon = []
-    list_classif = []
-    list_kmeans = []
-    list_acc = []
-    list_ari = []
+    # list_loss = []
+    # list_recon = []
+    # list_classif = []
+    # list_kmeans = []
+    # list_acc = []
+    # list_ari = []
+
+    history = defaultdict(list)
 
     # ---- Training Loop ----
     EPOCHS = 300
@@ -189,61 +264,62 @@ def train_dtcr():
         # print(all_assign)
         # print(all_labels)
 
+        # Compute clustering metrics
         acc = cluster_accuracy(all_assign, all_labels)
         ari = adjusted_rand_score(all_labels, all_assign)
+        nmi = normalized_mutual_info_score(all_labels, all_assign)
+        ri  = rand_score(all_labels, all_assign)
 
-        list_loss.append(avg_loss)
-        list_recon.append(avg_recon)
-        list_classif.append(avg_classif)
-        list_kmeans.append(avg_kmeans)
-        list_acc.append(acc)
-        list_ari.append(ari)
+        history['acc'].append(acc)
+        history['ari'].append(ari)
+        history['nmi'].append(nmi)
+        history['ri'].append(ri)
 
-        print(f"Epoch {epoch:02d}: loss={avg_loss:.4f} (recon={avg_recon}, classif={avg_classif}, k-means={avg_kmeans}), ACC={acc:.4f}, ARI={ari:.4f}")
+        history['loss'].append(avg_loss)
+        history['recon'].append(avg_recon)
+        history['classif'].append(avg_classif)
+        history['kmeans'].append(avg_kmeans)
+
+        if epoch % 5 == 0 or epoch == 1:
+            print(f"Epoch {epoch:02d}: loss={avg_loss:.4f} (recon={avg_recon}, classif={avg_classif}, k-means={avg_kmeans}), ACC={acc:.4f}, ARI={ari:.4f}")
 
         # scheduler.step(avg_loss)
 
-        # if epoch == 30 or epoch == 50 or epoch == 100:
-        #     # Plot embeddings
-        #     plt.figure()
-        #     z_all = []
-        #     for x, _ in test_loader:
-        #         x = x.to(DEVICE)
-        #         _, z = model(x)
-        #         z_all.append(z.cpu().detach().numpy())
-        #     Z = np.concatenate(z_all, axis=0)
+        # ---- t-SNE Visualization ----
+        if epoch == 50 or epoch == 500 or epoch == 1000:
+            print(f"Computing t-SNE visualization for Epoch {epoch}...")
+            from sklearn.manifold import TSNE
+            
+            model.eval()
+            z_all = []
+            y_all = []
+            
+            with torch.no_grad():
+                # Unpack matches IndexedDataset: (index, x, y)
+                for _, x, y in test_loader: 
+                    x = x.to(DEVICE)
+                    _, z = model(x)  # Get embeddings
+                    z_all.append(z.cpu().detach().numpy())
+                    y_all.append(y.numpy())
+            
+            Z = np.concatenate(z_all, axis=0)
+            Y = np.concatenate(y_all, axis=0)
 
-        #     plt.scatter(Z[:, 0], Z[:, 1], c=all_labels, cmap='tab10', s=15)
-        #     plt.title(f'Embeddings at Epoch {epoch}')
-        #     plt.show()
+            # Run t-SNE
+            # perplexity=30 is standard. init='pca' usually improves stability.
+            tsne = TSNE(n_components=2, perplexity=30, init='pca', random_state=42)
+            Z_tsne = tsne.fit_transform(Z)
+
+            # Plot
+            plt.figure(figsize=(10, 8))
+            scatter = plt.scatter(Z_tsne[:, 0], Z_tsne[:, 1], c=Y, cmap='tab10', s=20, alpha=0.6)
+            plt.colorbar(scatter, label='True Class')
+            plt.title(f't-SNE Latent Space (Epoch {epoch})')
+            plt.grid(True, alpha=0.3)
+            plt.show()
 
     # Plot loss and metrics over epochs
-    plt.figure(figsize=(12,4))
-
-    plt.subplot(1,2,1)
-    plt.plot(list_loss, label='Total Loss')
-    plt.plot(list_recon, label='Reconstruction Loss')
-    plt.plot(list_classif, label='Classification Loss')
-    plt.plot(list_kmeans, label='K-Means Loss')
-    plt.title('Training Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.yscale('log')
-    plt.grid()
-    plt.legend()
-
-    plt.subplot(1,2,2)
-    plt.plot(list_acc, label='ACC')
-    plt.plot(list_ari, label='ARI')
-    plt.title('Clustering Metrics')
-    plt.xlabel('Epoch')
-    plt.ylabel('Score')
-    plt.grid()
-    plt.legend()
-
-    plt.tight_layout()
-    plt.show()
-
+    plot_history(history)
 
 if __name__ == "__main__":
     train_dtcr()

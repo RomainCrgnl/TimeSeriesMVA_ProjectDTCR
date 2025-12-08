@@ -4,54 +4,53 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from drnn import DRNN
 
-import torch
-import torch.nn as nn
 
-class DilatedRNNLayer(nn.Module):
-    """
-    One layer of dilated RNN (LSTM/GRU/RNN)
-    """
-    def __init__(self, input_size, hidden_size, dilation=1, cell_type='GRU'):
-        super().__init__()
-        self.dilation = dilation
+# class DilatedRNNLayer(nn.Module):
+#     """
+#     One layer of dilated RNN (LSTM/GRU/RNN)
+#     """
+#     def __init__(self, input_size, hidden_size, dilation=1, cell_type='GRU'):
+#         super().__init__()
+#         self.dilation = dilation
 
-        if cell_type == 'GRU':
-            self.rnn = nn.GRU(input_size, hidden_size, batch_first=True)
-        elif cell_type == 'LSTM':
-            self.rnn = nn.LSTM(input_size, hidden_size, batch_first=True)
-        elif cell_type == 'RNN':
-            self.rnn = nn.RNN(input_size, hidden_size, batch_first=True)
-        else:
-            raise ValueError("Unknown cell_type")
+#         if cell_type == 'GRU':
+#             self.rnn = nn.GRU(input_size, hidden_size, batch_first=True)
+#         elif cell_type == 'LSTM':
+#             self.rnn = nn.LSTM(input_size, hidden_size, batch_first=True)
+#         elif cell_type == 'RNN':
+#             self.rnn = nn.RNN(input_size, hidden_size, batch_first=True)
+#         else:
+#             raise ValueError("Unknown cell_type")
 
-    def forward(self, x):
-        """
-        x: (batch, seq_len, input_size)
-        """
-        B, T, F = x.shape
-        d = self.dilation
+#     def forward(self, x):
+#         """
+#         x: (batch, seq_len, input_size)
+#         """
+#         B, T, F = x.shape
+#         d = self.dilation
 
-        # 1. Subsample sequence
-        # e.g. for d=2 take t=0,2,4,...
-        x_sub = x[:, ::d, :]   # (B, T_sub, F)
+#         # 1. Subsample sequence
+#         # e.g. for d=2 take t=0,2,4,...
+#         x_sub = x[:, ::d, :]   # (B, T_sub, F)
 
-        # 2. Run RNN on the subsampled sequence
-        out_sub, _ = self.rnn(x_sub)   # (B, T_sub, H)
+#         # 2. Run RNN on the subsampled sequence
+#         out_sub, _ = self.rnn(x_sub)   # (B, T_sub, H)
 
-        # 3. Expand back to full resolution
-        out = torch.zeros(B, T, out_sub.size(2), device=x.device)
+#         # 3. Expand back to full resolution
+#         out = torch.zeros(B, T, out_sub.size(2), device=x.device)
 
-        # fill in positions that correspond to dilated steps
-        out[:, ::d, :] = out_sub
+#         # fill in positions that correspond to dilated steps
+#         out[:, ::d, :] = out_sub
 
-        # For positions in between, repeat the last known state
-        # identical to TF code: use nearest previous valid state
-        for t in range(1, T):
-            if t % d != 0:
-                out[:, t, :] = out[:, t-1, :]
+#         # For positions in between, repeat the last known state
+#         # identical to TF code: use nearest previous valid state
+#         for t in range(1, T):
+#             if t % d != 0:
+#                 out[:, t, :] = out[:, t-1, :]
 
-        return out
+#         return out
 
 
 
@@ -78,34 +77,34 @@ class MultiLayerDilatedRNN(nn.Module):
 
 
 
-class MultiLayerDilatedRNN(nn.Module):
-    def __init__(self,
-                 input_size,
-                 hidden_sizes,
-                 num_layers=3,
-                 cell_type='GRU'):
-        super().__init__()
+# class MultiLayerDilatedRNN(nn.Module):
+#     def __init__(self,
+#                  input_size,
+#                  hidden_sizes,
+#                  num_layers=3,
+#                  cell_type='GRU'):
+#         super().__init__()
 
-        # dilation schedule = 1,2,4,8,... (as in DTCR)
-        # dilations = [2**i for i in range(num_layers)]
+#         # dilation schedule = 1,2,4,8,... (as in DTCR)
+#         # dilations = [2**i for i in range(num_layers)]
 
-        # dilation schedule = 1,4,16 for 3 layers (cf article)
-        dilations = [4**i for i in range(num_layers)]
+#         # dilation schedule = 1,4,16 for 3 layers (cf article)
+#         dilations = [4**i for i in range(num_layers)]
 
-        layers = []
-        for hidden_size, d in zip(hidden_sizes,dilations):
-            layers.append(DilatedRNNLayer(input_size, hidden_size, d, cell_type))
-            input_size = hidden_size
-        self.layers = nn.ModuleList(layers)
+#         layers = []
+#         for hidden_size, d in zip(hidden_sizes,dilations):
+#             layers.append(DilatedRNNLayer(input_size, hidden_size, d, cell_type))
+#             input_size = hidden_size
+#         self.layers = nn.ModuleList(layers)
 
-    def forward(self, x):
-        """
-        x: (batch, seq_len, input_size)
-        """
-        out = x
-        for layer in self.layers:
-            out = layer(out)
-        return out  # (batch, seq_len, hidden_size)
+#     def forward(self, x):
+#         """
+#         x: (batch, seq_len, input_size)
+#         """
+#         out = x
+#         for layer in self.layers:
+#             out = layer(out)
+#         return out  # (batch, seq_len, hidden_size)
 
 
 
@@ -125,10 +124,9 @@ class DTCR(nn.Module):
         self,
         input_size,                      # number of features per timestep
         num_steps,                       # sequence length (T)
-        embedding_size,                  # dimensionality of z
         cell_type='GRU',                 # or 'RNN' or 'LSTM' depending on drnn impl
-        drnn_layers=3,                   # number of dilated layers for DRNN
         drnn_hidden_sizes=[100, 50, 50], # list of hidden sizes per layer
+        bidirectional=True,               # whether to use bidirectional DRNN
         lamb=1e-3,                       # weight for kmeans loss
         class_num=10,                    # K clusters
         F_update_freq=10,                # frequency to update F in K-means loss
@@ -139,17 +137,17 @@ class DTCR(nn.Module):
         super().__init__()
         self.input_size = input_size
         self.num_steps = num_steps
-        self.embedding_size = embedding_size
         self.cell_type = cell_type
-        self.drnn_layers = drnn_layers
         self.drnn_hidden_sizes = drnn_hidden_sizes
+        self.drnn_layers = len(drnn_hidden_sizes)
         self.lamb = lamb
         self.K = class_num
         self.d = d
         self.denoising = denoising
         self.sample_loss = sample_loss
         
-        self.decoder_hidden_size = sum(drnn_hidden_sizes) # (cf article)
+        factor = 2 if bidirectional else 1
+        self.embedding_size = sum(drnn_hidden_sizes) * factor # (cf article), concatenate last outputs from all encoder layers, *2 for bidirectional
 
         self.iteration = 0
         self.F_update_freq = F_update_freq
@@ -157,27 +155,35 @@ class DTCR(nn.Module):
         # Encoder: DRNN -> linear projection to embedding
         # drnn expects input shape (seq_len, batch, input_size) per its README examples
         # self.encoder_drnn = DRNN(self.input_size, self.hidden_size, self.drnn_layers, self.cell_type)
-        self.encoder_drnn = MultiLayerDilatedRNN(
-            input_size=self.input_size,
-            hidden_sizes=self.drnn_hidden_sizes,
-            num_layers=self.drnn_layers, 
-            cell_type=self.cell_type
+        self.encoder_drnn = DRNN(
+            n_input=self.input_size, 
+            hidden_sizes=self.drnn_hidden_sizes, 
+            cell_type=self.cell_type,
+            bidirectional=bidirectional
         )
+
         # after DRNN, we'll map final hidden -> embedding (if GRU, hidden shape depends on implementation)
         # We'll map from hidden_size to embedding_size
-        self.enc_proj = nn.Sequential(
-            nn.Linear(self.drnn_hidden_sizes[-1], self.embedding_size),
-            nn.BatchNorm1d(self.embedding_size)
-        )
+        # self.DTCR_hidden_size = sum(self.drnn_hidden_sizes)  # concatenate last outputs from all layers (cf article)
+        
+        # self.enc_proj = nn.Sequential(
+        #     nn.Linear(concat_size, self.embedding_size), 
+        #     nn.BatchNorm1d(self.embedding_size)
+        # )
 
         # Decoder: simple GRU decoder that decodes embedding -> sequence
         # We'll decode by repeating embedding for each time step as initial input or initialize hidden from embedding
-        self.decoder_gru = nn.GRU(input_size=self.embedding_size, hidden_size=self.decoder_hidden_size, num_layers=1)
-        self.dec_out = nn.Linear(self.decoder_hidden_size, self.input_size)
+        # self.decoder_gru = nn.GRU(input_size=self.embedding_size, hidden_size=self.decoder_hidden_size, num_layers=1)
+        # self.dec_out = nn.Linear(self.decoder_hidden_size, self.input_size)
+        # self.decoder_gru = nn.GRU(
+        #     input_size=self.input_size,
+        #     hidden_size=self.embedding_size,
+        #     num_layers=1,
+        # )
+        # self.dec_out = nn.Linear(self.embedding_size, self.input_size)
 
-        # Learnable cluster centers for K-means loss
-        # Initialize with small random values. Shape: (K, embedding_size)
-        self.cluster_centers = nn.Parameter(torch.randn(self.K, self.embedding_size))
+        self.decoder_cell = nn.GRUCell(input_size=self.input_size, hidden_size=self.embedding_size)
+        self.dec_out = nn.Linear(self.embedding_size, self.input_size)
 
         self.fake_classifier = nn.Sequential(
             nn.Linear(self.embedding_size, self.d),
@@ -194,29 +200,53 @@ class DTCR(nn.Module):
         drnn expects (seq_len, batch, input_size)
         returns embedding z: (batch, embedding_size)
         """
-        out = self.encoder_drnn(x)               # (B,T,H)
-        z = out[:, -1, :]                        # use last state
-        z = self.enc_proj(z)
-        return z
+        _, layer_outputs = self.encoder_drnn(x)             
+        final_states = [out[-1] for out in layer_outputs]
+        #The latent representation is obtained by concatenating the last hidden state output of each layer of the Dilated RNN
+        h = torch.cat(final_states, dim=1) 
+        #z = self.enc_proj(h)
+        return h
+
+    # def decode(self, z):
+    #     """
+    #     z: (batch, embedding_size)
+    #     returns: recon: (batch, seq_len, input_size)
+    #     """
+    #     batch = z.size(0)
+    #     # use z to initialize GRU hidden: need shape (num_layers, batch, hidden_size)
+    #     h0 = z.unsqueeze(0).repeat(1, 1, 1)  # (1, batch, embedding_size)
+    #     # map embedding to hidden_size if different
+    #     if self.embedding_size != self.decoder_hidden_size:
+    #         h0 = F.linear(h0, torch.eye(self.embedding_size, self.decoder_hidden_size).to(h0.device)) if False else \
+    #              h0.new_zeros(1, batch, self.decoder_hidden_size)  # simpler: zero-init and let decoder learn
+    #     # feed a repeated embedding (or zeros) as inputs at each timestep
+    #     dec_inputs = z.unsqueeze(0).repeat(self.num_steps, 1, 1)  # (seq_len, batch, embedding_size)
+    #     out_seq, _ = self.decoder_gru(dec_inputs, h0)  # (seq_len, batch, hidden_size)
+    #     out_seq = out_seq.permute(1, 0, 2)  # (batch, seq_len, hidden_size)
+    #     recon = self.dec_out(out_seq)  # (batch, seq_len, input_size)
+    #     return recon
 
     def decode(self, z):
-        """
-        z: (batch, embedding_size)
-        returns: recon: (batch, seq_len, input_size)
-        """
-        batch = z.size(0)
-        # use z to initialize GRU hidden: need shape (num_layers, batch, hidden_size)
-        h0 = z.unsqueeze(0).repeat(1, 1, 1)  # (1, batch, embedding_size)
-        # map embedding to hidden_size if different
-        if self.embedding_size != self.decoder_hidden_size:
-            h0 = F.linear(h0, torch.eye(self.embedding_size, self.decoder_hidden_size).to(h0.device)) if False else \
-                 h0.new_zeros(1, batch, self.decoder_hidden_size)  # simpler: zero-init and let decoder learn
-        # feed a repeated embedding (or zeros) as inputs at each timestep
-        dec_inputs = z.unsqueeze(0).repeat(self.num_steps, 1, 1)  # (seq_len, batch, embedding_size)
-        out_seq, _ = self.decoder_gru(dec_inputs, h0)  # (seq_len, batch, hidden_size)
-        out_seq = out_seq.permute(1, 0, 2)  # (batch, seq_len, hidden_size)
-        recon = self.dec_out(out_seq)  # (batch, seq_len, input_size)
-        return recon
+
+        batch_size = z.size(0)
+        
+        # Initialize Hidden State with z
+        h = z 
+        
+        # Initialize Input with Zeros (Start Token)
+        curr_input = torch.zeros(batch_size, self.input_size, device=z.device)
+        
+        recon_seq = []
+        for t in range(self.num_steps):
+            # Input is (Batch, 1), Hidden is (Batch, 200)
+            h = self.decoder_cell(curr_input, h)
+            out = self.dec_out(h) # Output is (Batch, 1)
+            recon_seq.append(out)
+            
+            # Feed output as next input
+            curr_input = out 
+            
+        return torch.stack(recon_seq, dim=1)
 
     def forward(self, x):
         """
@@ -293,7 +323,10 @@ class DTCR(nn.Module):
 
         recon_l = self.recon_loss(x_real, recon)
         classif_l = self.classif_loss(z_all, real_fake_labels)
-        kmeans_l = self.kmeans_loss(z_real.t(), self.F[indices, :])
+        if self.lamb == 0: # avoid computing kmeans loss if not used
+            kmeans_l = torch.tensor(0.0, device=x_real.device)
+        else:
+            kmeans_l = self.kmeans_loss(z_real.t(), self.F[indices, :])
 
         total = recon_l + classif_l + self.lamb/2 * kmeans_l
 
@@ -307,56 +340,6 @@ class DTCR(nn.Module):
             # 'assignments': assignments
         }
     
-
-
-
-
-
-"""
-class DTCR():
-
-    def __init__(
-            self,
-            hidden_size,
-            num_steps,
-            embedding_size,
-            cell_type,
-            lamb,
-            class_num,
-            denosing,
-            sample_loss
-        ):
-
-        self.hidden_size = hidden_size
-        # self.dilations = dilations # useless for us, already computed in drnn
-        self.num_steps = num_steps
-        self.embedding_size = embedding_size
-        self.cell_type = cell_type
-        self.lamb = lamb
-        self.class_num = class_num
-        self.denosing = denosing
-        self.sample_loss = sample_loss
-
-        self.K = class_num # there are class_num clusters to find
-
-    def encoder():
-        pass # TODO
-
-    def decoder():
-        pass # TODO
-
-    def model():
-        pass # TODO
-
-    def recon_loss():
-        pass # TODO
-
-    def K_means_loss():
-        pass # TODO
-
-    def classif_loss():
-        pass # TODO
-        """
 
 # # Example usage:
 # x = torch.randn(8, 128, 1) # batch de taille 8, sequence length 128, input size 1
