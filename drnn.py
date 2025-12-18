@@ -16,7 +16,7 @@ class DRNN(nn.Module):
 
         #self.dilations = [2 ** i for i in range(n_layers)]
         # dilation schedule = 1, 4, 16 for 3 layers (cf article)
-        self.dilations = [4**i for i in range(self.n_layers)]
+        self.dilations = [4**i for i in range(self.n_layers)] 
 
         self.cell_type = cell_type
         self.bidirectional = bidirectional

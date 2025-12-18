@@ -337,7 +337,6 @@ class DTCR(nn.Module):
             'classif_loss': classif_l,
             'recon': recon,
             'z': z_real
-            # 'assignments': assignments
         }
     
 

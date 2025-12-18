@@ -1,4 +1,4 @@
-# train_dtcr_plane.py
+# train.py
 
 import torch
 import torch.optim as optim
@@ -179,12 +179,12 @@ def train_dtcr():
         input_size=seq_dim, # seq_len
         num_steps=seq_len,
         cell_type="GRU", # (cf article)
-        drnn_hidden_sizes=[100, 50, 50], # [100, 50, 50] or [50, 30, 30] (cf article)
+        drnn_hidden_sizes=[50, 30, 30], # [100, 50, 50] or [50, 30, 30] (cf article)
         lamb=1e-3, # in [1, 1e-1, 1e-2, 1e-3] (cf article)
         class_num=7,     # Plane dataset = 7 classes
     ).to(DEVICE)
 
-    optimizer = optim.Adam(model.parameters(), lr=1e-2) # lr=5e-3 (cf article)
+    optimizer = optim.Adam(model.parameters(), lr=5e-3) # lr=5e-3 (cf article)
     # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.1, patience=10) # (not in the article)
 
     # # ---- KMeans initialization ----
@@ -317,6 +317,40 @@ def train_dtcr():
             plt.title(f't-SNE Latent Space (Epoch {epoch})')
             plt.grid(True, alpha=0.3)
             plt.show()
+
+        # ---- Reconstruction Visualization (Every 100 epochs) ----
+        if epoch % 100 == 0:
+            print(f"Visualizing signal vs reconstruction for Epoch {epoch}...")
+            model.eval()
+            with torch.no_grad():
+                # Get a single batch from the test loader
+                # We use next(iter(...)) to grab the first batch
+                _, x_vis, _ = next(iter(test_loader)) 
+                x_vis = x_vis.to(DEVICE)
+                
+                # Forward pass to get reconstruction
+                # Assuming model returns (reconstruction, latent) based on _, z = model(x) usage
+                x_hat, _ = model(x_vis)
+                
+                # Move to CPU/Numpy for plotting
+                x_vis = x_vis.cpu().numpy()
+                x_hat = x_hat.cpu().numpy()
+                
+                # Plot the first 4 samples
+                n_plots = 4
+                fig, axs = plt.subplots(n_plots, 1, figsize=(10, 10))
+                
+                for i in range(n_plots):
+                    # .squeeze() handles the feature dimension (Time, 1) -> (Time,)
+                    axs[i].plot(x_vis[i].squeeze(), label='Original', color='black', linewidth=1.5, alpha=0.7)
+                    axs[i].plot(x_hat[i].squeeze(), label='Reconstructed', color='red', linestyle='--', linewidth=1.5)
+                    axs[i].set_title(f'Sample {i+1}')
+                    axs[i].legend()
+                    axs[i].grid(True, alpha=0.3)
+                
+                plt.suptitle(f'Signal Reconstruction at Epoch {epoch}')
+                plt.tight_layout()
+                plt.show()
 
     # Plot loss and metrics over epochs
     plot_history(history)
