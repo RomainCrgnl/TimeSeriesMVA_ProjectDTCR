@@ -14,7 +14,6 @@ class DRNN(nn.Module):
 
         self.n_layers = len(hidden_sizes)
 
-        #self.dilations = [2 ** i for i in range(n_layers)]
         # dilation schedule = 1, 4, 16 for 3 layers (cf article)
         self.dilations = [4**i for i in range(self.n_layers)] 
 
@@ -77,7 +76,7 @@ class DRNN(nn.Module):
 
     def _apply_cell(self, dilated_inputs, cell, batch_size, rate, hidden_size, hidden=None):
         if hidden is None:
-            # CRITICAL FIX: Handle bidirectional initialization
+            # FIX: Handle bidirectional initialization
             num_directions = 2 if self.bidirectional else 1
             
             if self.cell_type == 'LSTM':

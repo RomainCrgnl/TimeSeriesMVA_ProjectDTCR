@@ -3,13 +3,15 @@ import numpy as np
 import requests
 import zipfile
 from sklearn.preprocessing import StandardScaler
+import torch
+from torch.utils.data import Dataset, DataLoader
 
 UCR_URL = "https://www.cs.ucr.edu/~eamonn/time_series_data_2018/UCRArchive_2018.zip"
 
-def download_ucr_dataset(root="./data"):
+def download_ucr_dataset(name="Plane", root="./data"):
     """
     Downloads the full UCRArchive_2018 if missing.
-    Extracts only the Plane dataset.
+    Extracts only the dataset represented by name.
     """
     os.makedirs(root, exist_ok=True)
     zip_path = os.path.join(root, "UCRArchive_2018.zip")
@@ -28,14 +30,14 @@ def download_ucr_dataset(root="./data"):
         with zipfile.ZipFile(zip_path, "r") as z:
             z.extractall(root)
 
-    return os.path.join(extract_path, "Plane")
+    return os.path.join(extract_path, name)
 
 
-def load_plane_dataset(root=".\data"):
-    path = download_ucr_dataset(root)
+def load_dataset(name="Plane", root=".\data"):
+    path = download_ucr_dataset(name, root)
  
-    train_file = os.path.join(path, "Plane_TRAIN.tsv")
-    test_file = os.path.join(path, "Plane_TEST.tsv")
+    train_file = os.path.join(path, name+"_TRAIN.tsv")
+    test_file = os.path.join(path, name+"_TEST.tsv")
 
     train = np.loadtxt(train_file)
     test  = np.loadtxt(test_file)
@@ -47,31 +49,14 @@ def load_plane_dataset(root=".\data"):
     X_test = test[:, 1:]
     y_test = test[:, 0].astype(int)
 
-    # Normalize per feature (time step)
-    scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train.T).T
-    X_test  = scaler.transform(X_test.T).T
+    # Normalize
+    scaler_train = StandardScaler()
+    X_train = scaler_train.fit_transform(X_train.T).T
+    scaler_test = StandardScaler()
+    X_test = scaler_test.fit_transform(X_test.T).T
 
     return X_train, y_train, X_test, y_test
 
-
-
-
-import torch
-from torch.utils.data import Dataset, DataLoader
-
-# class TimeSeriesDataset(Dataset):
-#     def __init__(self, X, y):
-#         self.X = torch.tensor(X, dtype=torch.float32)
-#         self.y = torch.tensor(y, dtype=torch.long)
-
-#     def __len__(self):
-#         return len(self.X)
-
-#     def __getitem__(self, idx):
-#         # reshape (seq_len,) → (seq_len, 1)
-#         x = self.X[idx].unsqueeze(-1)
-#         return x, self.y[idx]
 
 class IndexedDataset(torch.utils.data.Dataset):
     def __init__(self, X, y):

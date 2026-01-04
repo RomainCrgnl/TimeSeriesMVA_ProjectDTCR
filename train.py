@@ -1,23 +1,21 @@
-# train.py
+# training procedure for DTCR model on UCR datasets
 
 import torch
 import torch.optim as optim
 import numpy as np
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score, rand_score
-
 from collections import defaultdict
-
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-
-from ucr_loader import load_plane_dataset, IndexedDataset, DataLoader #TimeSeriesDataset
-from dtcr_model import DTCR   # Your DTCR implementation
-
+from ucr_loader import load_dataset, IndexedDataset, DataLoader
+from dtcr_model import DTCR  
 from sklearn.cluster import KMeans
-
+import time
+import pandas as pd
+from tqdm.auto import tqdm
+import os
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
 
 def cluster_accuracy(assign, labels):
     # assignments are cluster indices, labels are true classes
@@ -30,9 +28,9 @@ def cluster_accuracy(assign, labels):
     return cm[r, c].sum() / len(assign)
 
 
-def plot_history(history):
+def plot_or_save_history(history, plot=True, save=False):
     # On crée une figure plus haute pour accomoder les 4 subplots verticaux
-    fig = plt.figure(figsize=(18, 12))
+    fig = plt.figure(figsize=(18, 9))
     
     # Grille de 4 lignes x 3 colonnes
     # La colonne 0 servira aux 4 losses séparées
@@ -72,10 +70,10 @@ def plot_history(history):
     
     # --- COLONNE 2 : Toutes les losses en Log Scale (Prend toute la hauteur) ---
     ax_log = fig.add_subplot(gs[:, 1]) # ":" signifie "toutes les lignes"
-    ax_log.plot(history['loss'], label='Total', alpha=0.8)
-    ax_log.plot(history['recon'], label='Reconstruction', alpha=0.8)
-    ax_log.plot(history['classif'], label='Classification', alpha=0.8)
-    ax_log.plot(history['kmeans'], label='K-Means', alpha=0.8)
+    ax_log.plot(history['loss'], label='Total', color='black', alpha=0.7)
+    ax_log.plot(history['recon'], label='Reconstruction', color='blue', alpha=0.7)
+    ax_log.plot(history['classif'], label='Classification', color='green', alpha=0.7)
+    ax_log.plot(history['kmeans'], label='K-Means', color='red', alpha=0.7)
     ax_log.set_title('All Losses (Log Scale)')
     ax_log.set_xlabel('Epoch')
     ax_log.set_ylabel('Loss (log)')
@@ -86,37 +84,22 @@ def plot_history(history):
     # --- COLONNE 3 : Métriques de Clustering (Prend toute la hauteur) ---
     ax_metrics = fig.add_subplot(gs[:, 2])
     
-    ax_metrics.plot(history['acc'], label='ACC', alpha=0.8)
-    ax_metrics.plot(history['ari'], label='ARI', alpha=0.8)
-    ax_metrics.plot(history['nmi'], label='NMI', alpha=0.8)
-    ax_metrics.plot( history['ri'], label='RI', alpha=0.8)
+    # ax_metrics.plot(history['acc'], label='ACC', alpha=0.8)
+    # ax_metrics.plot(history['ari'], label='ARI', alpha=0.8)
+    # ax_metrics.plot(history['nmi'], label='NMI', alpha=0.8)
+    ax_metrics.plot( history['ri'], label='RI', color='red', alpha=0.7)
     
     ax_metrics.set_title('Clustering Metrics')
     ax_metrics.set_xlabel('Epoch')
     ax_metrics.set_ylabel('Score')
-    ax_metrics.set_ylim(0, 1.05) # Fixe l'échelle entre 0 et 1
+    #ax_metrics.set_ylim(0, 1.05) # Fixe l'échelle entre 0 et 1
     ax_metrics.grid(True, alpha=0.3)
     ax_metrics.legend()
 
     plt.tight_layout()
-    plt.show()
 
-
-def initialize_cluster_centers(model, loader):
-    """Run embedding once over data, run KMeans on embeddings."""
-    from sklearn.cluster import KMeans
-
-    all_z = []
-    for x, _ in loader:
-        x = x.to(DEVICE)
-        _, z = model(x)
-        all_z.append(z.cpu().detach().numpy())
-    Z = np.concatenate(all_z, axis=0)
-
-    kmeans = KMeans(n_clusters=model.K).fit(Z)
-    model.cluster_centers.data = torch.tensor(
-        kmeans.cluster_centers_, dtype=torch.float32, device=DEVICE
-    )
+    if save: plt.savefig(os.path.join('.','figures',f'history_{time.strftime("%Y%m%d-%H%M%S")}.pdf'))
+    if plot: plt.show()
 
 
 def make_fake(x, alpha=0.2): # (cf article)
@@ -150,62 +133,22 @@ def update_F(H, K):
     return F
 
 
-def train_dtcr():
-    # ---- Load Data ----
-    X_train, y_train, X_test, y_test = load_plane_dataset()
+def train_dtcr(train_loader, test_loader, model, epochs=100, lr=5e-3, verbose=False, save_history_plot=False):
 
-    # print(X_train.shape)
-
-    # plt.figure()
-    # for i in range(5) :
-    #     plt.plot(X_train[i], label=y_train[i])
-    # plt.legend()
-    # plt.show()
-
-    # train_ds = TimeSeriesDataset(X_train, y_train)
-    # test_ds  = TimeSeriesDataset(X_test, y_test)
-
-    train_ds = IndexedDataset(X_train, y_train)
-    test_ds  = IndexedDataset(X_test, y_test)
-
-    train_loader = DataLoader(train_ds, batch_size=256, shuffle=True)
-    test_loader  = DataLoader(test_ds, batch_size=256, shuffle=False)
-
-    seq_len = X_train.shape[1]
-    seq_dim = 1  # univariate time series
-
-    # ---- Initialize Model ----
-    model = DTCR(
-        input_size=seq_dim, # seq_len
-        num_steps=seq_len,
-        cell_type="GRU", # (cf article)
-        drnn_hidden_sizes=[50, 30, 30], # [100, 50, 50] or [50, 30, 30] (cf article)
-        lamb=1e-3, # in [1, 1e-1, 1e-2, 1e-3] (cf article)
-        class_num=7,     # Plane dataset = 7 classes
-    ).to(DEVICE)
-
-    optimizer = optim.Adam(model.parameters(), lr=5e-3) # lr=5e-3 (cf article)
-    # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.1, patience=10) # (not in the article)
-
-    # # ---- KMeans initialization ----
-    # print("Initializing cluster centers...")
-    # initialize_cluster_centers(model, train_loader)
-
-    # list_loss = []
-    # list_recon = []
-    # list_classif = []
-    # list_kmeans = []
-    # list_acc = []
-    # list_ari = []
+    optimizer = optim.Adam(model.parameters(), lr=lr) # lr=5e-3 (cf article)
 
     history = defaultdict(list)
 
+    max_RI = 0
+    max_NMI = 0
+
+    progress_bar = tqdm(range(1, epochs+1), desc="Training DTCR")
     # ---- Training Loop ----
-    EPOCHS = 300
-    for epoch in range(1, EPOCHS+1):
+    for epoch in progress_bar:
 
         if model.iteration % model.F_update_freq == 0:
-            print("Updating F...")
+            if verbose:
+                print("Updating F...")
             H_all = compute_full_embeddings(model, train_loader)  # full dataset
             model.F = update_F(H_all, model.K)                    # update F
             
@@ -221,7 +164,7 @@ def train_dtcr():
             x_real = x_real.to(DEVICE)
             x_fake = make_fake(x_real).to(DEVICE)
 
-            out = model.total_loss(x_real, x_fake, indices)  # recon + classif + λ * kmeans
+            out = model.total_loss(x_real, x_fake, indices)  # recon + classif + lambda * kmeans
             loss = out['total']
             loss_r = out['recon_loss']
             loss_c = out['classif_loss']
@@ -236,12 +179,14 @@ def train_dtcr():
             classif_loss += loss_c.item() * x_real.size(0)
             kmeans_loss += loss_km.item() * x_real.size(0)
 
-        avg_loss = total_loss / len(train_ds)
-        avg_recon = recon_loss / len(train_ds)
-        avg_classif = classif_loss / len(train_ds)
-        avg_kmeans = kmeans_loss / len(train_ds)
+        avg_loss = total_loss / len(train_loader.dataset)
+        avg_recon = recon_loss / len(train_loader.dataset)
+        avg_classif = classif_loss / len(train_loader.dataset)
+        avg_kmeans = kmeans_loss / len(train_loader.dataset)
 
         # ---- Evaluate clustering ----
+        # The idea is to compute clustering metrics on the test set
+        # and consider that the model with the best test metrics is the best (be careful, data leakage here!)
         model.eval()
         all_assign = []
         all_labels = []
@@ -261,9 +206,6 @@ def train_dtcr():
         all_assign = np.concatenate(all_assign)
         all_labels = np.concatenate(all_labels)
 
-        # print(all_assign)
-        # print(all_labels)
-
         # Compute clustering metrics
         acc = cluster_accuracy(all_assign, all_labels)
         ari = adjusted_rand_score(all_labels, all_assign)
@@ -280,13 +222,23 @@ def train_dtcr():
         history['classif'].append(avg_classif)
         history['kmeans'].append(avg_kmeans)
 
-        if epoch % 5 == 0 or epoch == 1:
+        # save best metrics
+        if ri > max_RI : max_RI = ri
+        if nmi > max_NMI : max_NMI = nmi
+
+        progress_bar.set_postfix({
+            'Loss': f"{avg_loss:.3f}", 
+            'RI': f"{ri:.3f}", 
+            'Max_RI': f"{max_RI:.3f}",
+            'NMI': f"{ri:.3f}", 
+            'Max_NMI': f"{max_RI:.3f}",
+        })
+
+        if verbose and (epoch % 5 == 0 or epoch == 1):
             print(f"Epoch {epoch:02d}: loss={avg_loss:.4f} (recon={avg_recon}, classif={avg_classif}, k-means={avg_kmeans}), ACC={acc:.4f}, ARI={ari:.4f}")
 
-        # scheduler.step(avg_loss)
-
         # ---- t-SNE Visualization ----
-        if epoch == 50 or epoch == 500 or epoch == 1000:
+        if verbose and (epoch == 50 or epoch == 300 or epoch == 1000):
             print(f"Computing t-SNE visualization for Epoch {epoch}...")
             from sklearn.manifold import TSNE
             
@@ -319,7 +271,7 @@ def train_dtcr():
             plt.show()
 
         # ---- Reconstruction Visualization (Every 100 epochs) ----
-        if epoch % 100 == 0:
+        if verbose and epoch % 100 == 0:
             print(f"Visualizing signal vs reconstruction for Epoch {epoch}...")
             model.eval()
             with torch.no_grad():
@@ -353,7 +305,258 @@ def train_dtcr():
                 plt.show()
 
     # Plot loss and metrics over epochs
-    plot_history(history)
+    if verbose or save_history_plot :
+        plot_or_save_history(history, plot=verbose, save=save_history_plot)
+
+    return max_RI, max_NMI
+
+def random_network(train_loader, test_loader, drnn_hidden_sizes, epochs=100, verbose=False):
+
+    history = defaultdict(list)
+
+    max_RI = 0
+    max_NMI = 0
+
+    for epoch in range(epochs):
+
+        if epoch % 100 == 0 :
+            print(f"{epoch=}")
+
+        # ---- Initialize Model ----
+        model = DTCR(
+            input_size=seq_dim, # seq dimension (univariate for UCR datasets)
+            num_steps=seq_len,
+            cell_type="GRU", # (cf article)
+            drnn_hidden_sizes=[50, 30, 30], # [100, 50, 50] or [50, 30, 30] (cf article)
+            lamb=1e-2, # in [1, 1e-1, 1e-2, 1e-3] (cf article)
+            class_num=7, # Plane dataset = 7 classes
+            Kmeans_objective=True,
+            classification_task=True
+        ).to(DEVICE)
+
+
+        # ---- Evaluate clustering ----
+        model.eval()
+        all_assign = []
+        all_labels = []
+
+        for _, x, y in test_loader:
+            x = x.to(DEVICE)
+
+            _, z = model(x)
+
+            H = z.detach().cpu().numpy()
+            kmeans = KMeans(n_clusters=model.K)
+            assign = kmeans.fit_predict(H)
+
+            all_assign.append(assign)
+            all_labels.append(y.numpy())
+
+        all_assign = np.concatenate(all_assign)
+        all_labels = np.concatenate(all_labels)
+
+        # Compute clustering metrics
+        acc = cluster_accuracy(all_assign, all_labels)
+        ari = adjusted_rand_score(all_labels, all_assign)
+        nmi = normalized_mutual_info_score(all_labels, all_assign)
+        ri  = rand_score(all_labels, all_assign)
+
+        history['acc'].append(acc)
+        history['ari'].append(ari)
+        history['nmi'].append(nmi)
+        history['ri'].append(ri)
+
+        # save best metrics
+        if ri > max_RI : max_RI = ri
+        if nmi > max_NMI : max_NMI = nmi
+
+    if verbose:
+        plt.figure()
+        for key in history.keys():
+            plt.plot(history[key], label=key, alpha=0.6)
+        plt.ylim([0,1])
+        plt.legend()
+        plt.show()
+
+    return max_RI, max_NMI
+        
+
+
 
 if __name__ == "__main__":
-    train_dtcr()
+
+    one_shot_train = True 
+
+    if one_shot_train:
+
+        # ---- Load Data ----
+        X_train, y_train, X_test, y_test = load_dataset(name="Plane")
+
+        plt.figure(figsize=(6,6))
+        for i in range(3):
+            plt.plot(X_train[i], label=f'class {y_train[i]}')
+        plt.title('Sample Time Series from Plane Dataset')
+        plt.xlabel('Time Steps')
+        plt.ylabel('Value')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.show()
+
+        print(np.unique(y_train))
+
+        train_ds = IndexedDataset(X_train, y_train)
+        test_ds  = IndexedDataset(X_test, y_test)
+
+        train_loader = DataLoader(train_ds, batch_size=256, shuffle=True)
+        test_loader  = DataLoader(test_ds, batch_size=256, shuffle=False)
+
+        seq_len = X_train.shape[1]
+        seq_dim = 1  # univariate time series
+
+        epochs=300 
+
+        # ---- Initialize Model ----
+        model = DTCR(
+            input_size=seq_dim, # dimension of the sequence (univariate for UCR datasets)
+            num_steps=seq_len,
+            cell_type="GRU", # (cf article)
+            drnn_hidden_sizes=[50, 30, 30], # [100, 50, 50] or [50, 30, 30] (cf article)
+            lamb=1e-3, # in [1, 1e-1, 1e-2, 1e-3] (cf article)
+            class_num=7, # Plane dataset = 7 classes
+            Kmeans_objective=True,
+            classification_task=True
+        ).to(DEVICE)
+
+        max_RI, max_NMI = train_dtcr(train_loader, test_loader, model, epochs=epochs, lr=5e-3, verbose=True)
+        print(f"RI: {max_RI} NMI: {max_NMI}")
+
+        #random_network(train_loader, test_loader, drnn_hidden_sizes=[50,30,30],  epochs=epochs)
+        
+    else: 
+
+        list_dataset_name = ["Plane"]
+
+        # Hyperparameter grids, see 5.2 in the report (long computations)
+        list_drnn_hidden_sizes = [[50, 30, 30], [100, 50, 50]]
+        list_lambda = [1, 1e-1, 1e-2, 1e-3]
+        list_Kmeans_classif = [(True, True)]
+        epochs = 300
+        nb_runs = 10
+
+        # # Influence of the objectives, see 5.4 in the report
+        # list_drnn_hidden_sizes = [[50, 30, 30]]
+        # list_lambda = [1e-3]
+        # # list of tuples indicating if we consider each of the objectives
+        # list_Kmeans_classif = [(True, False), 
+        #                        (False, True), 
+        #                        (False, False)] 
+        # epochs = 300
+        # nb_runs = 10
+
+        # Influence of the dilatation schedule, see 5.3 in the report
+        # Run the 5.5 experiments with different dilatation schedules by changing line 18 in drnn.py
+        # self.dilations = [4**i for i in range(self.n_layers)] # original dilatation schedule (cf article)
+        # self.dilations = [2**i for i in range(self.n_layers)] # low dilatation schedule
+        # self.dilations = [8**i for i in range(self.n_layers)] # high dilatation schedule
+        # self.dilations = [1**i for i in range(self.n_layers)] # no dilatation
+        # Please also change epochs=300 (line 469 in train.py)
+
+        # # Learning over 2000 epochs, see 5.5 in the report
+        # # Do not forget to change the dilatation schedule in drnn.py back to the original one if you changed it before
+        # # and save figure of history by changing save_history_plot=True in line 469
+        # list_drnn_hidden_sizes = [[50, 30, 30]]
+        # list_lambda = [1e-3]
+        # list_Kmeans_classif = [(True, True)]
+        # epochs = 2000
+        # nb_runs = 10
+
+        results_list = []
+        start_time = time.time()
+        for name in list_dataset_name:
+
+            # ---- Load Data ----
+            X_train, y_train, X_test, y_test = load_dataset(name=name)
+
+            n_classes = len(np.unique(y_train))
+            print(f"Classes detected: {n_classes}")
+
+            train_ds = IndexedDataset(X_train, y_train)
+            test_ds  = IndexedDataset(X_test, y_test)
+
+            train_loader = DataLoader(train_ds, batch_size=256, shuffle=True)
+            test_loader  = DataLoader(test_ds, batch_size=256, shuffle=False)
+
+            seq_len = X_train.shape[1]
+            seq_dim = 1  # univariate time series
+
+            for drnn_hidden_sizes in list_drnn_hidden_sizes:
+                for lamb in list_lambda:
+                    for Kmeans_objective, classification_task in list_Kmeans_classif:
+
+                        print(f"Dataset: {name} | drnn_hidden_sizes: {drnn_hidden_sizes} | lambda: {lamb}")
+
+                        # Temporary lists to store metrics for the 10 runs
+                        list_max_RI = []
+                        list_max_NMI = []
+
+                        for run_i in range(nb_runs):
+
+                            print(f"   > Run {run_i+1}/{nb_runs}...", end=" ")
+
+                            # ---- Initialize Model ----
+                            model = DTCR(
+                                input_size=seq_dim, # dimension of the sequence (univariate for UCR datasets)
+                                num_steps=seq_len,
+                                cell_type="GRU", # (cf article)
+                                drnn_hidden_sizes=drnn_hidden_sizes, # [100, 50, 50] or [50, 30, 30] (cf article)
+                                lamb=lamb, # in [1, 1e-1, 1e-2, 1e-3] (cf article)
+                                class_num=n_classes,
+                                Kmeans_objective=Kmeans_objective,
+                                classification_task=classification_task
+                            ).to(DEVICE)
+
+                            # All experiments except baseline random network
+                            max_RI, max_NMI = train_dtcr(train_loader, test_loader, model, epochs=epochs, lr=5e-3, verbose=False, save_history_plot=False)
+                            # # Experiment baseline random network
+                            # max_RI, max_NMI = random_network(train_loader, test_loader, drnn_hidden_sizes, epochs=epochs)
+
+                            list_max_RI.append(max_RI)
+                            list_max_NMI.append(max_NMI)
+
+                            print(f"RI: {max_RI:.4f} | NMI: {max_NMI:.4f}")
+                            
+                        mean_RI = np.mean(list_max_RI)
+                        std_RI = np.std(list_max_RI)
+
+                        mean_NMI = np.mean(list_max_NMI)
+                        std_NMI  = np.std(list_max_NMI)
+
+                        print(f"   >>> Result: Mean RI: {mean_RI:.3f} (±{std_RI:.3f}) | Mean NMI: {mean_NMI:.3f} (±{std_NMI:.3f})")
+
+                        results_list.append({
+                            "Dataset": name,
+                            "Hidden_Sizes": str(drnn_hidden_sizes),
+                            "Lambda": lamb,
+                            "Kmeans_Objective": Kmeans_objective,
+                            "Classification_Task": classification_task,
+                            "Mean_RI": mean_RI,
+                            "Std_RI": std_RI,
+                            "Mean_NMI": mean_NMI,
+                            "Std_NMI": std_NMI,
+                            "All_RIs": list_max_RI,
+                            "All_NMIs": list_max_NMI
+                        })
+            
+        print(f"Time: {time.time() - start_time}")
+
+        df_results = pd.DataFrame(results_list)
+
+        # Display table
+        print("\n\n" + "="*50)
+        print("FINAL RESULTS SUMMARY")
+        print("="*50)
+        print(df_results[["Dataset", "Hidden_Sizes", "Lambda", "Kmeans_Objective", "Classification_Task", "Mean_RI", "Std_RI"]])
+
+        # Save to CSV
+        df_results.to_csv(f"experiment_results_{time.strftime('%Y%m%d-%H%M%S')}.csv", index=False)
+        print(f"\nResults saved to CSV. Total time: {time.time() - start_time:.2f}s")
